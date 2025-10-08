@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from "react";
 
 // ==== Types ====
-type UserRole = "user" | "admin";
+type UserRole = "user" | "admin" | "organization";
 
 interface User {
   username: string;
@@ -10,16 +10,22 @@ interface User {
 
 type CaseType = "case_note" | "school_report" | "medical_document";
 type AbuseLevel = "low" | "medium" | "serious";
+type Gender = "male" | "female" | "other";
 
 interface CaseData {
   id: number;
   type: CaseType;
+  childName: string;
+  childAge: number;
+  childGender: Gender;
   content: string;
   extracted: string;
   date: string;
   prediction: AbuseLevel;
   notified: boolean;
   matchedKeywords: string[];
+  createdBy: UserRole;
+  lastEditedBy?: UserRole;
 }
 
 interface DetectionResult {
@@ -59,6 +65,7 @@ const ABUSE_INDICATORS: Record<AbuseLevel, LevelIndicators> = {
 const USERS: User[] = [
   { username: "admin", role: "admin" },
   { username: "user", role: "user" },
+  { username: "organization", role: "organization" },
 ];
 
 const DEMO_PASSWORD = "123";
@@ -154,7 +161,11 @@ function App() {
 
   const [cases, setCases] = useState<CaseData[]>([]);
   const [caseType, setCaseType] = useState<CaseType>("case_note");
+  const [childName, setChildName] = useState("");
+  const [childAge, setChildAge] = useState("");
+  const [childGender, setChildGender] = useState<Gender>("male");
   const [content, setContent] = useState("");
+  const [editingCaseId, setEditingCaseId] = useState<number | null>(null);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -173,39 +184,161 @@ function App() {
   const handleAddCase = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!content.trim()) {
-      alert("Nội dung không được để trống");
+    if (!childName.trim() || !childAge.trim() || !content.trim()) {
+      alert("Tên trẻ, tuổi và nội dung không được để trống");
+      return;
+    }
+
+    const ageNum = parseInt(childAge, 10);
+    if (isNaN(ageNum) || ageNum <= 0) {
+      alert("Tuổi phải là số dương hợp lệ");
+      return;
+    }
+
+    if (editingCaseId && user!.role === "user") {
+      alert("Bạn không có quyền chỉnh sửa dữ liệu.");
       return;
     }
 
     const detection = detectAbuseLevel(content);
 
     const newCase: CaseData = {
-      id: Date.now(),
+      id: editingCaseId || Date.now(),
       type: caseType,
+      childName: childName.trim(),
+      childAge: ageNum,
+      childGender,
       content,
       extracted: detection.reasoning,
       date: new Date().toISOString().slice(0, 10),
       prediction: detection.level,
       notified: detection.level === "serious",
       matchedKeywords: detection.matchedKeywords,
+      createdBy: editingCaseId
+        ? cases.find((c) => c.id === editingCaseId)!.createdBy
+        : user!.role,
+      lastEditedBy: editingCaseId ? user!.role : undefined,
     };
 
-    setCases((prev) => [newCase, ...prev]);
+    // Improved duplicate checking: match by name (case-insensitive), age, and gender
+    const existingCases = cases.filter(
+      (c) =>
+        c.childName.toLowerCase() === childName.trim().toLowerCase() &&
+        c.childAge === ageNum &&
+        c.childGender === childGender &&
+        c.id !== editingCaseId
+    );
+
+    if (existingCases.length > 0) {
+      let message = `Phát hiện thông tin trùng lặp cho trẻ "${childName.trim()}" (Tuổi: ${ageNum}, Giới tính: ${
+        childGender === "male"
+          ? "Nam"
+          : childGender === "female"
+          ? "Nữ"
+          : "Khác"
+      }). Các case trước đây:\n`;
+      existingCases.forEach((c, index) => {
+        message += `\nCase ${index + 1} (${c.date}):\n`;
+        message += `Loại: ${c.type}\n`;
+        message += `Nội dung: ${c.content}\n`;
+        message += `Trích xuất: ${c.extracted}\n`;
+        message += `Dự đoán: ${
+          c.prediction === "serious"
+            ? "Nghiêm trọng"
+            : c.prediction === "medium"
+            ? "Vừa"
+            : "Thấp"
+        }\n`;
+        message += `Từ khóa khớp: ${
+          c.matchedKeywords.length > 0 ? c.matchedKeywords.join(", ") : "-"
+        }\n`;
+      });
+      alert(message);
+    } else {
+      alert(
+        editingCaseId
+          ? `Đã cập nhật thông tin cho trẻ "${childName.trim()}".`
+          : `Đã thêm thông tin mới cho trẻ "${childName.trim()}".`
+      );
+    }
+
+    if (editingCaseId) {
+      setCases((prev) =>
+        prev.map((c) => (c.id === editingCaseId ? newCase : c))
+      );
+    } else {
+      setCases((prev) => [newCase, ...prev]);
+    }
+
+    setChildName("");
+    setChildAge("");
+    setChildGender("male");
     setContent("");
+    setCaseType("case_note");
+    setEditingCaseId(null);
+  };
+
+  const handleEditCase = (caseData: CaseData) => {
+    if (user!.role === "user") {
+      alert("Bạn không có quyền chỉnh sửa dữ liệu.");
+      return;
+    }
+    setEditingCaseId(caseData.id);
+    setCaseType(caseData.type);
+    setChildName(caseData.childName);
+    setChildAge(caseData.childAge.toString());
+    setChildGender(caseData.childGender);
+    setContent(caseData.content);
+  };
+
+  const handleDeleteCase = (id: number) => {
+    if (user!.role === "user") {
+      alert("Bạn không có quyền xóa dữ liệu.");
+      return;
+    }
+    if (window.confirm("Bạn có chắc muốn xóa trường hợp này?")) {
+      setCases((prev) => prev.filter((c) => c.id !== id));
+      alert("Đã xóa trường hợp.");
+    }
   };
 
   const stats = useMemo(() => {
-    const total = cases.length;
-    const serious = cases.filter((c) => c.prediction === "serious").length;
-    const medium = cases.filter((c) => c.prediction === "medium").length;
-    const low = cases.filter((c) => c.prediction === "low").length;
-    const hasSerious = cases.some(
+    const filteredCases =
+      user?.role === "organization"
+        ? cases.filter((c) => c.prediction === "serious")
+        : user?.role === "user"
+        ? cases.filter((c) => c.createdBy === "user" && !c.lastEditedBy)
+        : cases.filter(
+            (c) =>
+              c.createdBy !== "organization" &&
+              c.lastEditedBy !== "organization"
+          );
+
+    const total = filteredCases.length;
+    const serious = filteredCases.filter(
+      (c) => c.prediction === "serious"
+    ).length;
+    const medium = filteredCases.filter(
+      (c) => c.prediction === "medium"
+    ).length;
+    const low = filteredCases.filter((c) => c.prediction === "low").length;
+    const hasSerious = filteredCases.some(
       (c) => c.prediction === "serious" && c.notified
     );
 
     return { total, serious, medium, low, hasSerious };
-  }, [cases]);
+  }, [cases, user]);
+
+  // Filter cases for display based on user role
+  const displayedCases =
+    user?.role === "organization"
+      ? cases.filter((c) => c.prediction === "serious")
+      : user?.role === "user"
+      ? cases.filter((c) => c.createdBy === "user" && !c.lastEditedBy)
+      : cases.filter(
+          (c) =>
+            c.createdBy !== "organization" && c.lastEditedBy !== "organization"
+        );
 
   if (!user) {
     return (
@@ -269,7 +402,7 @@ function App() {
           }}
         >
           <div style={{ marginBottom: 4 }}>
-            Tài khoản: <b>admin</b> hoặc <b>user</b>
+            Tài khoản: <b>admin</b>, <b>user</b>, hoặc <b>organization</b>
           </div>
           <div>
             Mật khẩu: <b>123</b>
@@ -309,7 +442,7 @@ function App() {
         }}
       >
         <div style={{ flex: 1 }}>
-          <h3>Nhập dữ liệu mới</h3>
+          <h3>{editingCaseId ? "Chỉnh sửa dữ liệu" : "Nhập dữ liệu mới"}</h3>
           <div>
             <label htmlFor="type" style={{ display: "block", marginBottom: 4 }}>
               Loại tài liệu:
@@ -323,6 +456,52 @@ function App() {
               <option value="case_note">Case Note</option>
               <option value="school_report">School Report</option>
               <option value="medical_document">Medical Document</option>
+            </select>
+
+            <label
+              htmlFor="childName"
+              style={{ display: "block", marginBottom: 4 }}
+            >
+              Tên trẻ:
+            </label>
+            <input
+              id="childName"
+              value={childName}
+              onChange={(e) => setChildName(e.target.value)}
+              placeholder="Nhập tên trẻ"
+              style={{ width: "100%", marginBottom: 12, padding: 8 }}
+            />
+
+            <label
+              htmlFor="childAge"
+              style={{ display: "block", marginBottom: 4 }}
+            >
+              Tuổi trẻ:
+            </label>
+            <input
+              id="childAge"
+              type="number"
+              value={childAge}
+              onChange={(e) => setChildAge(e.target.value)}
+              placeholder="Nhập tuổi trẻ"
+              style={{ width: "100%", marginBottom: 12, padding: 8 }}
+            />
+
+            <label
+              htmlFor="childGender"
+              style={{ display: "block", marginBottom: 4 }}
+            >
+              Giới tính trẻ:
+            </label>
+            <select
+              id="childGender"
+              value={childGender}
+              onChange={(e) => setChildGender(e.target.value as Gender)}
+              style={{ width: "100%", marginBottom: 12, padding: 8 }}
+            >
+              <option value="male">Nam</option>
+              <option value="female">Nữ</option>
+              <option value="other">Khác</option>
             </select>
 
             <label
@@ -348,8 +527,29 @@ function App() {
               onClick={handleAddCase}
               style={{ width: "100%", padding: 10 }}
             >
-              Gửi và phân tích
+              {editingCaseId ? "Cập nhật" : "Gửi và phân tích"}
             </button>
+            {editingCaseId &&
+              (user.role === "admin" || user.role === "organization") && (
+                <button
+                  onClick={() => {
+                    setChildName("");
+                    setChildAge("");
+                    setChildGender("male");
+                    setContent("");
+                    setCaseType("case_note");
+                    setEditingCaseId(null);
+                  }}
+                  style={{
+                    width: "100%",
+                    padding: 10,
+                    marginTop: 8,
+                    backgroundColor: "#ccc",
+                  }}
+                >
+                  Hủy chỉnh sửa
+                </button>
+              )}
           </div>
 
           {stats.hasSerious && (
@@ -370,28 +570,30 @@ function App() {
           )}
         </div>
 
-        <div
-          style={{
-            minWidth: 220,
-            padding: 16,
-            backgroundColor: "#f5f5f5",
-            borderRadius: 8,
-          }}
-        >
-          <h3 style={{ marginTop: 0 }}>Thống kê</h3>
-          <p>
-            Tổng số trường hợp: <b>{stats.total}</b>
-          </p>
-          <p>
-            Nghiêm trọng: <b style={{ color: "red" }}>{stats.serious}</b>
-          </p>
-          <p>
-            Vừa: <b style={{ color: "orange" }}>{stats.medium}</b>
-          </p>
-          <p>
-            Thấp: <b style={{ color: "green" }}>{stats.low}</b>
-          </p>
-        </div>
+        {(user.role === "admin" || user.role === "organization") && (
+          <div
+            style={{
+              minWidth: 220,
+              padding: 16,
+              backgroundColor: "#f5f5f5",
+              borderRadius: 8,
+            }}
+          >
+            <h3 style={{ marginTop: 0 }}>Thống kê</h3>
+            <p>
+              Tổng số trường hợp: <b>{stats.total}</b>
+            </p>
+            <p>
+              Nghiêm trọng: <b style={{ color: "red" }}>{stats.serious}</b>
+            </p>
+            <p>
+              Vừa: <b style={{ color: "orange" }}>{stats.medium}</b>
+            </p>
+            <p>
+              Thấp: <b style={{ color: "green" }}>{stats.low}</b>
+            </p>
+          </div>
+        )}
       </div>
 
       <h3 style={{ marginTop: 32 }}>Lịch sử dữ liệu</h3>
@@ -404,24 +606,42 @@ function App() {
           <thead style={{ backgroundColor: "#e0e0e0" }}>
             <tr>
               <th>Loại</th>
+              <th>Tên trẻ</th>
+              <th>Tuổi</th>
+              <th>Giới tính</th>
               <th>Nội dung</th>
               <th>Trích xuất (NLP)</th>
               <th>Từ khóa khớp</th>
               <th>Dự đoán AI</th>
               <th>Ngày</th>
+              {(user.role === "admin" || user.role === "organization") && (
+                <th>Hành động</th>
+              )}
             </tr>
           </thead>
           <tbody>
-            {cases.length === 0 ? (
+            {displayedCases.length === 0 ? (
               <tr>
-                <td colSpan={6} style={{ textAlign: "center", color: "#999" }}>
+                <td
+                  colSpan={user.role === "user" ? 9 : 10}
+                  style={{ textAlign: "center", color: "#999" }}
+                >
                   Chưa có dữ liệu
                 </td>
               </tr>
             ) : (
-              cases.map((c) => (
+              displayedCases.map((c) => (
                 <tr key={c.id}>
                   <td>{c.type}</td>
+                  <td>{c.childName}</td>
+                  <td>{c.childAge}</td>
+                  <td>
+                    {c.childGender === "male"
+                      ? "Nam"
+                      : c.childGender === "female"
+                      ? "Nữ"
+                      : "Khác"}
+                  </td>
                   <td style={{ maxWidth: 250 }}>{c.content}</td>
                   <td>{c.extracted}</td>
                   <td>
@@ -448,6 +668,22 @@ function App() {
                       : "Thấp"}
                   </td>
                   <td>{c.date}</td>
+                  {(user.role === "admin" || user.role === "organization") && (
+                    <td>
+                      <button
+                        onClick={() => handleEditCase(c)}
+                        style={{ marginRight: 8 }}
+                      >
+                        Sửa
+                      </button>
+                      <button
+                        onClick={() => handleDeleteCase(c.id)}
+                        style={{ backgroundColor: "#ff4444" }}
+                      >
+                        Xóa
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))
             )}
